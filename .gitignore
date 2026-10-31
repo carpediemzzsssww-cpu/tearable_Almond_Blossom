@@ -40,3 +40,5 @@ __MACOSX/
 # ── 按项目补：参考图、用户截图、授权素材（例）──
 # research/images/
 # research/user-references/
+.vercel
+.env*

@@ -2,7 +2,7 @@
 
 The whole page is a sheet of backlit linen with the faint shadow of a tree behind it. Pull it down anywhere and the hem opens into a V, the turquoise sky appears, and the shadows turn into almond blossoms that unfurl as the hem passes them. Colours after Van Gogh's *Almond Blossom* (1890).
 
-**Live:** _(not deployed yet)_
+**Live:** [tearable-almond-blossom.vercel.app](https://tearable-almond-blossom.vercel.app)
 
 ![full pull](docs/screens/desktop-4-full-held.png)
 
