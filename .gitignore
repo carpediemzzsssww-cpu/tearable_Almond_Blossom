@@ -1,0 +1,42 @@
+# ── 依赖与构建 ──
+node_modules/
+node_modules.nosync/
+dist/
+dist-*/
+.vite/
+*.tsbuildinfo
+__pycache__/
+
+# ── 本地配置与密钥 ──
+.env
+.env.*
+!.env.example
+.vercel/
+*.local
+
+# ── 产物：小工具包、录屏、截图、验收输出 ──
+release/
+artifacts/
+output/
+*.zip
+*.log
+
+# ── AI 工具的本地文件（官方 skill 解压在这里，不进仓库）──
+# 想共享 Claude 预览配置时改成：.claude/*  和  !.claude/launch.json
+.claude/
+.codex/
+.agents/
+.playwright-cli/
+AGENTS.md
+CLAUDE.md
+progress.md
+
+# ── 系统与编辑器 ──
+.DS_Store
+__MACOSX/
+.idea/
+.vscode/
+
+# ── 按项目补：参考图、用户截图、授权素材（例）──
+# research/images/
+# research/user-references/
