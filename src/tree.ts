@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mulberry32, clamp, lerp } from './util';
 import { petalGeometry, centerGeometry, budGeometry, leafGeometry } from './geometry';
+import { barkTextures } from './textures';
 import type { Curtain } from './curtain';
 
 export interface TreeCtx {
@@ -161,6 +162,7 @@ export class Tree {
   private idleFall = 5;
   private fallSerial = 0;
   private sideFlip = 1;
+  private barkMaps: THREE.Texture[] = [];
 
   constructor(view: { W: number; H: number }, petalTex: THREE.Texture, seed = 1890) {
     this.L = Math.min(view.W, view.H);
@@ -362,21 +364,30 @@ export class Tree {
       nSeg += b.n - 1;
       nJoint += b.n;
     }
-    const bark = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.86 });
+    const barkTex = barkTextures();
+    this.barkMaps = [barkTex.map, barkTex.bump];
+    const bark = new THREE.MeshStandardMaterial({
+      color: 0xffffff, map: barkTex.map, bumpMap: barkTex.bump,
+      bumpScale: 0.0035, roughness: 0.96,
+    });
     const cyl = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0);
     this.segMesh = new THREE.InstancedMesh(cyl, bark, nSeg);
     this.jointMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), bark, nJoint);
     const c = new THREE.Color();
-    const c0 = [new THREE.Color('#2f2822'), new THREE.Color('#40332a'), new THREE.Color('#5a4433')];
-    const c1 = [new THREE.Color('#4a3a2e'), new THREE.Color('#6b5040'), new THREE.Color('#7d6a3e')];
-    let si = 0, ji = 0;
+    const c0 = [new THREE.Color('#48584c'), new THREE.Color('#5b6250'), new THREE.Color('#6e6a50')];
+    const c1 = [new THREE.Color('#7f8e73'), new THREE.Color('#99966e'), new THREE.Color('#aca172')];
+    const ochre = new THREE.Color('#a99062');
+    let si = 0, ji = 0, branchIndex = 0;
     for (const b of this.branches) {
       for (let j = 0; j < b.n; j++) {
         const f = Math.pow(j / (b.n - 1), 1.4);
-        c.copy(c0[b.depth]).lerp(c1[b.depth], f).multiplyScalar(0.9 + R() * 0.2);
+        c.copy(c0[b.depth]).lerp(c1[b.depth], f)
+          .lerp(ochre, (0.5 + 0.5 * Math.sin(j * 0.71 + branchIndex * 2.1)) * 0.12)
+          .multiplyScalar(0.9 + R() * 0.2);
         if (j < b.n - 1) this.segMesh.setColorAt(si++, c);
         this.jointMesh.setColorAt(ji++, c);
       }
+      branchIndex++;
     }
     for (const m of [this.segMesh, this.jointMesh]) {
       m.castShadow = true;
@@ -814,5 +825,6 @@ export class Tree {
     for (const geometry of geometries) geometry.dispose();
     // The petal texture is shared by successive trees and remains owned by main.
     for (const material of materials) material.dispose();
+    for (const texture of this.barkMaps) texture.dispose();
   }
 }

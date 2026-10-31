@@ -110,10 +110,24 @@ for (const v of views) {
   await page.waitForTimeout(3500);
   await healthy('second-pull');
   await page.screenshot({ path: `${out}/${v.name}-6-second-pull.png` });
+  const frameTiming = await page.evaluate(() => new Promise(resolve => {
+    const samples = [];
+    let last = 0;
+    const tick = time => {
+      if (last) samples.push(time - last);
+      last = time;
+      if (samples.length < 60) requestAnimationFrame(tick);
+      else {
+        const sorted = [...samples].sort((a, b) => a - b);
+        resolve({ meanMs: samples.reduce((a, b) => a + b, 0) / samples.length, p95Ms: sorted[Math.floor(sorted.length * 0.95)] });
+      }
+    };
+    requestAnimationFrame(tick);
+  }));
   const full = await page.evaluate(() => window.__almond.state());
   const pointerTypes = await page.evaluate(() => window.__verifyPointerTypes);
   assert.deepEqual(pointerTypes, [v.touch ? 'touch' : 'mouse', v.touch ? 'touch' : 'mouse'], `${v.name}: wrong input path`);
-  console.log(v.name, JSON.stringify({ half, full, pointerTypes, errors }));
+  console.log(v.name, JSON.stringify({ half, full, frameTiming, pointerTypes, errors }));
   await ctx.close();
 }
 } finally {

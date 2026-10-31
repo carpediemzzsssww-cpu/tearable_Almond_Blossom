@@ -9,166 +9,200 @@ function makeCanvas(w: number, h = w) {
 }
 
 /**
- * Turquoise wall in the spirit of "Almond Blossom" (1890):
- * short directional strokes in several blue-greens, plus a matching bump map
- * so raking light catches the impasto.
+ * Mineral blue-green paint, with thin scumbled layers and changing brush flow.
+ * Colour reference: Van Gogh Museum, Almond Blossom, s0176V1962.
+ * This is generated paint texture; no part of the painting is used as an asset.
  */
 export function wallTextures(aniso: number, size = 1024) {
-  const S = size;
-  const c = makeCanvas(S);
-  const g = c.getContext('2d')!;
-  const b = makeCanvas(S);
-  const h = b.getContext('2d')!;
+  const S = size, k = S / 1024, tau = Math.PI * 2;
+  const c = makeCanvas(S), g = c.getContext('2d')!;
+  const b = makeCanvas(S), h = b.getContext('2d')!;
   const R = mulberry32(11);
-
-  g.fillStyle = '#80c0c8';
+  g.fillStyle = '#52959e';
   g.fillRect(0, 0, S, S);
-  h.fillStyle = 'rgb(128,128,128)';
+  h.fillStyle = '#808080';
   h.fillRect(0, 0, S, S);
 
-  const wrap = (x: number, y: number, r: number, fn: (ox: number, oy: number) => void) => {
+  const wrap = (x: number, y: number, radius: number, fn: (ox: number, oy: number) => void) => {
     for (const ox of [-S, 0, S])
       for (const oy of [-S, 0, S]) {
-        if (x + ox + r < 0 || x + ox - r > S || y + oy + r < 0 || y + oy - r > S) continue;
+        if (x + ox + radius < 0 || x + ox - radius > S || y + oy + radius < 0 || y + oy - radius > S) continue;
         fn(ox, oy);
       }
   };
 
-  // broad, quiet mottling
-  const blobs = ['#8ac6cc', '#78b6c0', '#96cfd0', '#7fbcc4', '#a2d4d2'];
-  for (let i = 0; i < 60; i++) {
-    const x = R() * S, y = R() * S, r = (80 + R() * 220) * (S / 1024);
-    const col = blobs[(R() * blobs.length) | 0];
+  // Transparent underpainting: broad cool and green passages remain visible
+  // between the smaller marks, rather than one flat cyan coat.
+  const washes = ['#5b9fa3', '#397e91', '#71aaa8', '#4a909e', '#699fa5'];
+  for (let i = 0; i < 46; i++) {
+    const x = R() * S, y = R() * S, r = (100 + R() * 220) * k;
+    const colour = washes[(R() * washes.length) | 0];
     wrap(x, y, r, (ox, oy) => {
       const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
-      gr.addColorStop(0, col);
-      gr.addColorStop(1, 'rgba(0,0,0,0)');
-      g.globalAlpha = 0.2;
+      gr.addColorStop(0, colour);
+      gr.addColorStop(1, colour + '00');
+      g.globalAlpha = 0.22;
       g.fillStyle = gr;
       g.fillRect(x + ox - r, y + oy - r, r * 2, r * 2);
     });
   }
 
-  // short brush strokes following a slow flow field
-  const tones = ['#88c6cc', '#79b8c2', '#96cfd0', '#74b2bf', '#a6d8d4', '#84c2c8', '#b4dfda', '#7cbcc6'];
-  const k = S / 1024;
-  g.lineCap = 'round';
-  h.lineCap = 'round';
-  for (let i = 0; i < 3800; i++) {
-    const x = R() * S, y = R() * S;
-    const ang = Math.sin(x * 0.006 / k + 1.3) * 0.9 + Math.cos(y * 0.0045 / k) * 0.7 + (R() - 0.5) * 0.9;
-    const len = (8 + R() * 20) * k;
-    const wid = (4.5 + R() * 5) * k;
-    const col = tones[(R() * tones.length) | 0];
-    const a = 0.06 + R() * 0.15;
-    const bend = (R() - 0.5) * 0.45 * len;
-    const dx = (Math.cos(ang) * len) / 2, dy = (Math.sin(ang) * len) / 2;
-    const nx = -Math.sin(ang) * bend, ny = Math.cos(ang) * bend;
-    const shade = (115 + R() * 70) | 0;
-    wrap(x, y, len, (ox, oy) => {
-      g.globalAlpha = a;
-      g.strokeStyle = col;
-      g.lineWidth = wid;
-      g.beginPath();
-      g.moveTo(x - dx + ox, y - dy + oy);
-      g.quadraticCurveTo(x + nx + ox, y + ny + oy, x + dx + ox, y + dy + oy);
-      g.stroke();
-      h.globalAlpha = 0.45;
-      h.strokeStyle = `rgb(${shade},${shade},${shade})`;
-      h.lineWidth = wid * 0.85;
-      h.beginPath();
-      h.moveTo(x - dx + ox, y - dy + oy);
-      h.quadraticCurveTo(x + nx + ox, y + ny + oy, x + dx + ox, y + dy + oy);
-      h.stroke();
-    });
+  const tones = ['#408490', '#5c9fa6', '#67a7a8', '#438d9c', '#7ab0ad', '#55999c', '#35818e', '#8ab7b0'];
+  // Broad translucent strokes, then finer broken strokes. Width tapers along
+  // each mark; a few separated bristles keep them from reading as little tiles.
+  for (let layer = 0; layer < 2; layer++) {
+    const count = layer === 0 ? 1350 : 3600;
+    for (let i = 0; i < count; i++) {
+      const x = R() * S, y = R() * S;
+      const u = x / S * tau, v = y / S * tau;
+      const ang = Math.atan2(Math.sin(u + 0.7 * Math.sin(v)) * 0.8 + 0.35,
+        Math.cos(v) * 0.75 + Math.sin(2 * u + v) * 0.4) + (R() - 0.5) * 1.4;
+      const len = (layer === 0 ? 30 + R() * 65 : 7 + R() * 32) * k;
+      const width = (layer === 0 ? 8 + R() * 19 : 1.8 + R() * 5.5) * k;
+      const bend = (R() - 0.5) * len * 0.4;
+      const colour = tones[(R() * tones.length) | 0];
+      const alpha = layer === 0 ? 0.07 + R() * 0.12 : 0.12 + R() * 0.18;
+      const uneven = 0.2 + R() * 0.5;
+      const shade = Math.round(132 + R() * 23);
+      const bristles = 2 + ((R() * 4) | 0);
+      wrap(x, y, len, (ox, oy) => {
+        for (const ctx of [g, h]) {
+          ctx.save();
+          ctx.translate(x + ox, y + oy);
+          ctx.rotate(ang);
+          ctx.globalAlpha = ctx === g ? alpha : (layer === 0 ? 0.12 : 0.26);
+          ctx.fillStyle = ctx === g ? colour : `rgb(${shade},${shade},${shade})`;
+          ctx.beginPath();
+          ctx.moveTo(-len * 0.5, width * 0.15);
+          ctx.quadraticCurveTo(-len * 0.3, bend - width * 0.6, len * 0.46, -width * uneven);
+          ctx.lineTo(len * 0.5, width * 0.1);
+          ctx.quadraticCurveTo(len * 0.1, bend + width * 0.55, -len * 0.43, width * uneven);
+          ctx.closePath();
+          ctx.fill();
+          // Very shallow dragged bristle ridges. The light catches these
+          // occasionally, without giving every mark a hard bevel.
+          if (layer === 1) {
+            ctx.strokeStyle = ctx === g ? '#b0cdc1' : '#a0a0a0';
+            ctx.globalAlpha = ctx === g ? alpha * 0.25 : 0.13;
+            ctx.lineWidth = k * 0.55;
+            for (let j = 0; j < bristles; j++) {
+              const f = (j + 0.5) / bristles - 0.5;
+              ctx.beginPath();
+              ctx.moveTo(-len * (0.27 + uneven * 0.18), f * width);
+              ctx.quadraticCurveTo(0, bend + f * width, len * 0.38, f * width * 0.6);
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
+        }
+      });
+    }
   }
-  g.globalAlpha = 1;
-  h.globalAlpha = 1;
-
-  // fine plaster grain
+  g.globalAlpha = h.globalAlpha = 1;
+  // Quiet pigment tooth, below the contrast of the brush marks.
   const img = g.getImageData(0, 0, S, S);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const n = (R() - 0.5) * 7;
-    d[i] += n;
-    d[i + 1] += n;
-    d[i + 2] += n;
+  for (let i = 0; i < img.data.length; i += 4) {
+    const grain = (R() - 0.5) * 3;
+    img.data[i] += grain;
+    img.data[i + 1] += grain;
+    img.data[i + 2] += grain;
   }
   g.putImageData(img, 0, 0);
 
-  // soften the bump so it reads as paint, not noise
-  const b2 = makeCanvas(S);
-  const h2 = b2.getContext('2d')!;
-  h2.filter = 'blur(1.2px)';
-  h2.drawImage(b, 0, 0);
-
   const map = new THREE.CanvasTexture(c);
   map.colorSpace = THREE.SRGBColorSpace;
-  const bump = new THREE.CanvasTexture(b2);
+  const bump = new THREE.CanvasTexture(b);
   for (const t of [map, bump]) {
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = aniso;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
   }
   return { map, bump };
 }
 
-/** Plain-weave linen: colour map with slubs + normal map from a thread height field. */
+/** Soft, irregular linen yarns. Crossing relief is subtle, not a checkerboard. */
 export function linenTextures(aniso: number) {
-  const S = 512, P = 8, T = S / P;
+  const S = 768, T = 96, tau = Math.PI * 2;
   const R = mulberry32(5);
-  const warpT = new Float32Array(T), weftT = new Float32Array(T);
-  const warpC = new Float32Array(T), weftC = new Float32Array(T);
-  const slubW: number[][] = [], slubF: number[][] = [];
-  for (let i = 0; i < T; i++) {
-    warpT[i] = 0.75 + R() * 0.5;
-    weftT[i] = 0.75 + R() * 0.5;
-    warpC[i] = 0.95 + R() * 0.08;
-    weftC[i] = 0.94 + R() * 0.09;
-    slubW.push(R() < 0.25 ? [R() * S, 10 + R() * 30] : []);
-    slubF.push(R() < 0.25 ? [R() * S, 10 + R() * 30] : []);
-  }
-  const H = new Float32Array(S * S);
-  const col = new Float32Array(S * S);
-  for (let y = 0; y < S; y++)
-    for (let x = 0; x < S; x++) {
-      const i = (x / P) | 0, j = (y / P) | 0;
-      const fx = ((x % P) + 0.5) / P, fy = ((y % P) + 0.5) / P;
-      const over = ((i + j) & 1) === 0;
-      let sw = 1, sf = 1;
-      const a = slubW[i], bb = slubF[j];
-      if (a.length) sw += 0.35 * Math.exp(-(((y - a[0]) / a[1]) ** 2));
-      if (bb.length) sf += 0.35 * Math.exp(-(((x - bb[0]) / bb[1]) ** 2));
-      const cw = Math.pow(Math.sin(Math.PI * fx), 0.75 / (warpT[i] * sw));
-      const cf = Math.pow(Math.sin(Math.PI * fy), 0.75 / (weftT[j] * sf));
-      const sy = Math.sin(Math.PI * fy), sx = Math.sin(Math.PI * fx);
-      const wh = cw * (over ? 0.75 + 0.25 * sy : 0.5 - 0.2 * sy);
-      const fh = cf * (over ? 0.5 - 0.2 * sx : 0.75 + 0.25 * sx);
-      const hh = Math.max(wh, fh);
-      H[y * S + x] = hh;
-      col[y * S + x] = (0.93 + 0.07 * hh) * (wh > fh ? warpC[i] : weftC[j]);
+  // Unequal yarn spacing is periodic at the tile boundary. It breaks the
+  // regular pixel grid without introducing a visible seam in a folded panel.
+  const yarns = () => {
+    const width = new Float32Array(T), center = new Float32Array(T);
+    const colour = new Float32Array(T), phase = new Float32Array(T);
+    const thick = new Float32Array(T), slubY = new Float32Array(T), slubL = new Float32Array(T);
+    let sum = 0;
+    for (let i = 0; i < T; i++) {
+      width[i] = 0.82 + R() * 0.36;
+      sum += width[i];
+      colour[i] = 0.988 + R() * 0.024;
+      phase[i] = R() * tau;
+      thick[i] = 0.85 + R() * 0.3;
+      slubY[i] = R() * S;
+      slubL[i] = R() < 0.35 ? 12 + R() * 28 : 0;
     }
+    let at = 0;
+    for (let i = 0; i < T; i++) {
+      width[i] *= S / sum;
+      center[i] = at + width[i] * 0.5;
+      at += width[i];
+    }
+    const index = new Uint8Array(S);
+    let j = 0;
+    for (let x = 0; x < S; x++) {
+      while (j < T - 1 && x + 0.5 >= center[j] + width[j] * 0.5) j++;
+      index[x] = j;
+    }
+    return { width, center, colour, phase, thick, slubY, slubL, index };
+  };
+  const warp = yarns(), weft = yarns();
+  const height = new Float32Array(S * S), colour = new Float32Array(S * S);
+  const periodicDistance = (a: number, b: number) => {
+    const d = Math.abs(a - b);
+    return Math.min(d, S - d);
+  };
+  const profile = (d: number, thickness: number) => Math.pow(Math.max(0, Math.cos(Math.PI * d)), 0.55 / thickness);
+  for (let y = 0; y < S; y++) {
+    const j = weft.index[y];
+    for (let x = 0; x < S; x++) {
+      const i = warp.index[x];
+      const warpSlub = warp.slubL[i] > 0 ? Math.exp(-((periodicDistance(y, warp.slubY[i]) / warp.slubL[i]) ** 2)) : 0;
+      const weftSlub = weft.slubL[j] > 0 ? Math.exp(-((periodicDistance(x, weft.slubY[j]) / weft.slubL[j]) ** 2)) : 0;
+      // Small meanders and uneven fibre thickness; all long waves tile exactly.
+      const wx = (x + 0.5 - warp.center[i]) / warp.width[i] + Math.sin(y / S * tau * 3 + warp.phase[i]) * 0.025;
+      const fy = (y + 0.5 - weft.center[j]) / weft.width[j] + Math.sin(x / S * tau * 2 + weft.phase[j]) * 0.022;
+      const cw = profile(wx, warp.thick[i] * (1 + warpSlub * 0.26));
+      const cf = profile(fy, weft.thick[j] * (1 + weftSlub * 0.23));
+      const over = ((i + j) & 1) === 0;
+      const wh = cw * (over ? 0.61 : 0.58);
+      const fh = cf * (over ? 0.58 : 0.61);
+      const lift = Math.max(wh, fh);
+      const tooth = 0.004 * Math.sin(x / S * tau * 5 + Math.sin(y / S * tau * 3));
+      height[y * S + x] = lift + (warpSlub + weftSlub) * 0.025;
+      const threadColour = (warp.colour[i] * (cw + 0.05) + weft.colour[j] * (cf + 0.05)) / (cw + cf + 0.1);
+      colour[y * S + x] = (0.978 + 0.022 * lift) * threadColour + tooth - (warpSlub + weftSlub) * 0.004;
+    }
+  }
   const c = makeCanvas(S), g = c.getContext('2d')!;
   const n = makeCanvas(S), gn = n.getContext('2d')!;
   const ci = g.createImageData(S, S), ni = gn.createImageData(S, S);
-  const base = [236, 227, 210];
-  const st = 2.2;
+  // Undyed, warm grey flax rather than yellow canvas; the scene provides warmth.
+  const base = [228, 223, 211], strength = 0.85;
   for (let y = 0; y < S; y++)
     for (let x = 0; x < S; x++) {
-      const k = y * S + x;
-      const v = col[k];
-      ci.data[k * 4] = base[0] * v;
-      ci.data[k * 4 + 1] = base[1] * v;
-      ci.data[k * 4 + 2] = base[2] * v;
-      ci.data[k * 4 + 3] = 255;
-      const hl = H[y * S + ((x - 1 + S) % S)], hr = H[y * S + ((x + 1) % S)];
-      const hu = H[((y - 1 + S) % S) * S + x], hd = H[((y + 1) % S) * S + x];
-      let nx = (hl - hr) * st, ny = (hd - hu) * st;
-      const nz = 1;
-      const l = Math.hypot(nx, ny, nz);
-      ni.data[k * 4] = ((nx / l) * 0.5 + 0.5) * 255;
-      ni.data[k * 4 + 1] = ((ny / l) * 0.5 + 0.5) * 255;
-      ni.data[k * 4 + 2] = ((nz / l) * 0.5 + 0.5) * 255;
-      ni.data[k * 4 + 3] = 255;
+      const i = y * S + x;
+      const v = colour[i], grain = (R() - 0.5) * 0.9;
+      ci.data[i * 4] = base[0] * v + grain;
+      ci.data[i * 4 + 1] = base[1] * v + grain;
+      ci.data[i * 4 + 2] = base[2] * v + grain;
+      ci.data[i * 4 + 3] = 255;
+      const hl = height[y * S + ((x - 1 + S) % S)], hr = height[y * S + ((x + 1) % S)];
+      const hu = height[((y - 1 + S) % S) * S + x], hd = height[((y + 1) % S) * S + x];
+      const nx = (hl - hr) * strength, ny = (hd - hu) * strength;
+      const l = Math.hypot(nx, ny, 1);
+      ni.data[i * 4] = (nx / l * 0.5 + 0.5) * 255;
+      ni.data[i * 4 + 1] = (ny / l * 0.5 + 0.5) * 255;
+      ni.data[i * 4 + 2] = (0.5 / l + 0.5) * 255;
+      ni.data[i * 4 + 3] = 255;
     }
   g.putImageData(ci, 0, 0);
   gn.putImageData(ni, 0, 0);
@@ -178,8 +212,67 @@ export function linenTextures(aniso: number) {
   for (const t of [map, normal]) {
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = aniso;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
   }
   return { map, normal };
+}
+
+/** Muted, longitudinal bark scumbling. Light marks follow the branch, never form rings. */
+export function barkTextures(aniso = 4) {
+  const W = 256, H = 512, tau = Math.PI * 2;
+  const R = mulberry32(1891);
+  const c = makeCanvas(W, H), g = c.getContext('2d')!;
+  const b = makeCanvas(W, H), h = b.getContext('2d')!;
+  const ci = g.createImageData(W, H), bi = h.createImageData(W, H);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const u = x / W * tau, v = y / H * tau;
+      const grain = Math.sin(u * 17 + Math.sin(v * 2) * 0.5) * 1.1 + (R() - 0.5) * 1.8;
+      ci.data[i] = 241 + grain;
+      ci.data[i + 1] = 241 + grain;
+      ci.data[i + 2] = 228 + grain;
+      ci.data[i + 3] = 255;
+      bi.data[i] = bi.data[i + 1] = bi.data[i + 2] = 128 + grain * 0.4;
+      bi.data[i + 3] = 255;
+    }
+  const shades = [[158, 175, 146], [204, 182, 132], [255, 251, 220]];
+  for (let mark = 0; mark < 180; mark++) {
+    const cx = R() * W, cy = R() * H;
+    const width = 1.2 + R() * 4.2, length = 10 + R() * 48;
+    const type = (R() * shades.length) | 0, shade = shades[type];
+    const opacity = type === 2 ? 0.18 + R() * 0.13 : 0.1 + R() * 0.1;
+    const phase = R() * tau;
+    for (let oy = -1; oy <= 1; oy++)
+      for (let ox = -1; ox <= 1; ox++) {
+        const px = cx + ox * W, py = cy + oy * H;
+        const y0 = Math.max(0, Math.floor(py - length * 1.6)), y1 = Math.min(H - 1, Math.ceil(py + length * 1.6));
+        const x0 = Math.max(0, Math.floor(px - width * 3)), x1 = Math.min(W - 1, Math.ceil(px + width * 3));
+        for (let y = y0; y <= y1; y++) {
+          const dy = (y - py) / length;
+          const bend = Math.sin(dy * 0.8 + phase) * width * 0.45;
+          for (let x = x0; x <= x1; x++) {
+            const dx = (x - px - bend) / width;
+            const alpha = Math.exp(-dx * dx * 1.5 - dy ** 4) * opacity;
+            const i = (y * W + x) * 4;
+            for (let channel = 0; channel < 3; channel++) ci.data[i + channel] += (shade[channel] - ci.data[i + channel]) * alpha;
+            const relief = (type === 0 ? -10 : 11) * alpha;
+            bi.data[i] = bi.data[i + 1] = bi.data[i + 2] = bi.data[i] + relief;
+          }
+        }
+      }
+  }
+  g.putImageData(ci, 0, 0);
+  h.putImageData(bi, 0, 0);
+  const map = new THREE.CanvasTexture(c);
+  map.colorSpace = THREE.SRGBColorSpace;
+  const bump = new THREE.CanvasTexture(b);
+  for (const t of [map, bump]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.anisotropy = aniso;
+  }
+  return { map, bump };
 }
 
 /** Almond petal: warm white, rose flush at the claw, faint fanning veins. v=0 base, v=1 tip. */

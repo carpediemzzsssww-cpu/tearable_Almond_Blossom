@@ -21,12 +21,12 @@ let dpr = maxDpr;
 renderer.setPixelRatio(dpr);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NeutralToneMapping;
-renderer.toneMappingExposure = 1.55;
+renderer.toneMappingExposure = 1.18;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = false;
 
-const BG = new THREE.Color('#9fd0d4');
+const BG = new THREE.Color('#659fa8');
 const scene = new THREE.Scene();
 scene.background = BG;
 const CAM_Z = 6;
@@ -40,8 +40,8 @@ const viewAt = (z: number) => {
 };
 
 // ── light: low warm sun from the upper left, turquoise sky fill ──
-scene.add(new THREE.HemisphereLight('#e8f6f6', '#c9bba0', 0.9));
-const sun = new THREE.DirectionalLight('#fff5e8', 3.1);
+scene.add(new THREE.HemisphereLight('#e8f1ee', '#c9bfae', 1.85));
+const sun = new THREE.DirectionalLight('#fff7eb', 2.15);
 sun.position.set(-2.6, 3.6, 4.6);
 sun.castShadow = true;
 const sm = lowTier ? 1024 : 2048;
@@ -50,6 +50,7 @@ sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 14;
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.015;
+sun.shadow.intensity = 0.66;
 scene.add(sun);
 
 const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -60,7 +61,7 @@ wt.map.repeat.set(3.4, 3.4);
 wt.bump.repeat.set(3.4, 3.4);
 const wall = new THREE.Mesh(
   new THREE.PlaneGeometry(20, 20),
-  new THREE.MeshStandardMaterial({ map: wt.map, bumpMap: wt.bump, bumpScale: 0.3, roughness: 0.94 }),
+  new THREE.MeshStandardMaterial({ map: wt.map, bumpMap: wt.bump, bumpScale: 0.035, roughness: 0.97 }),
 );
 wall.receiveShadow = true;
 scene.add(wall);
@@ -80,17 +81,17 @@ const lt = linenTextures(aniso);
 const linenU = {
   tSil: { value: silRT.texture },
   uRes: { value: new THREE.Vector2(1, 1) },
-  uGlow: { value: 0.2 },
+  uGlow: { value: 0.18 },
   uSize: { value: new THREE.Vector2(1, 1) },
 };
 const linen = new THREE.MeshPhysicalMaterial({
   map: lt.map,
   normalMap: lt.normal,
-  normalScale: new THREE.Vector2(0.22, 0.22),
-  roughness: 0.9,
-  sheen: 0.7,
-  sheenRoughness: 0.75,
-  sheenColor: new THREE.Color('#fff4e2'),
+  normalScale: new THREE.Vector2(0.16, 0.16),
+  roughness: 0.96,
+  sheen: 0.38,
+  sheenRoughness: 0.9,
+  sheenColor: new THREE.Color('#f2eadb'),
   side: THREE.DoubleSide,
 });
 linen.onBeforeCompile = (sh) => {
@@ -110,7 +111,8 @@ linen.onBeforeCompile = (sh) => {
       diffuseColor.rgb *= 1.0 - 0.12 * (1.0 - smoothstep(0.0, 0.005, abs(hy - 0.055)));
       float st = (1.0 - smoothstep(0.002, 0.0045, abs(hy - 0.028))) * step(0.45, fract(vRawUv.x * uSize.x / 0.034));
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.74, 0.66, 0.55), st * 0.6);
-      if (!gl_FrontFacing) diffuseColor.rgb *= vec3(0.8, 0.76, 0.72);`,
+      // Both faces are the same linen, with a little less light on its reverse.
+      if (!gl_FrontFacing) diffuseColor.rgb *= vec3(0.95, 0.94, 0.92);`,
     )
     .replace(
       '#include <emissivemap_fragment>',
@@ -118,7 +120,7 @@ linen.onBeforeCompile = (sh) => {
       // daylight through the weave, interrupted by the branches behind it
       vec2 suv = gl_FragCoord.xy / uRes;
       float sil = texture(tSil, suv + vec2(-0.004, -0.012), 2.2).r * 0.5 + texture(tSil, suv + vec2(-0.009, -0.024), 3.8).r * 0.5;
-      float face = gl_FrontFacing ? 1.0 : 0.4;
+      float face = gl_FrontFacing ? 1.0 : 0.75;
       totalEmissiveRadiance += vec3(1.0, 0.9, 0.74) * uGlow * mix(0.5, 1.0, sil) * face;`,
     );
 };
@@ -153,7 +155,7 @@ function build() {
   if (lowTier) curtain.iterations = 10;
   curtain.viewW = vc.W;
   linenU.uSize.value.set(curtain.o.W, curtain.o.H);
-  const tile = vc.H * 0.17;
+  const tile = vc.H * 0.22;
   lt.map.repeat.set(curtain.o.W / tile, curtain.o.H / tile);
   lt.normal.repeat.copy(lt.map.repeat);
   scene.add(curtain.mesh);
@@ -215,14 +217,14 @@ function rubber(dx: number, dy: number) {
 function grabAt(sx: number, sy: number) {
   ndc.set((sx / innerWidth) * 2 - 1, -(sy / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
-  curtain.geometry.computeBoundingSphere();
+  curtain.mesh.geometry.computeBoundingSphere();
   // A hole is empty space. Projecting every particle alone would let the hand
   // grab invisible cloth through the opening, or a rear fold through the front.
   const surface = ray.intersectObject(curtain.mesh, false)[0];
   if (!surface) return false;
   let k = -1, distance = Infinity;
-  if (surface.face) {
-    for (const candidate of [surface.face.a, surface.face.b, surface.face.c]) {
+  if (surface.faceIndex != null) {
+    for (const candidate of curtain.surface.physicsVerticesForTriangle(surface.faceIndex)) {
       if (!curtain.isParticleActive(candidate) || curtain.inv[candidate] === 0) continue;
       hit.fromArray(curtain.pos, candidate * 3).project(camera);
       const d = ((hit.x * 0.5 + 0.5) * innerWidth - sx) ** 2 + ((0.5 - hit.y * 0.5) * innerHeight - sy) ** 2;
@@ -311,6 +313,7 @@ function simulate(dt: number) {
   }
 
   curtain.step(dt);
+  curtain.updateMesh();
   curtain.updateHeightfield();
   const open = curtain.openness();
   maxOpen = Math.max(maxOpen, Math.min(1, open));
@@ -321,7 +324,6 @@ function simulate(dt: number) {
   ctx.wave = wave;
   ctx.curtain = curtain;
   tree.update(dt, ctx);
-  curtain.updateMesh();
 }
 
 function draw() {

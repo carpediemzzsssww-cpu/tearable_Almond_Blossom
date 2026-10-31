@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp } from './util';
 import { TearTopology } from './tear-topology';
+import { ClothSurface } from './cloth-surface';
 
 export interface CurtainOpts {
   W: number; // panel width (wider than the view so the side edges never show)
@@ -31,6 +32,24 @@ export class Curtain {
   private materialNode: Uint16Array;
   private tornEdges: number[] = [];
   private pieces = 0;
+  private faceLayer: Uint8Array;
+  private particleLayer: Uint8Array;
+  private contactGrid: number[][] = Array.from({ length: 40 * 48 }, () => []);
+  private contactTriangles: Uint16Array;
+  private physicsContactTriangles: Uint16Array;
+  private contactRender = false;
+  private renderNodeLayers = new Uint8Array(0);
+  private contactSeen: Int32Array;
+  private contactStamp = 0;
+  private contactIds = new Uint16Array(72000 * 6);
+  private contactWeights = new Float32Array(72000 * 7);
+  private contactLayers = new Uint8Array(72000);
+  private contactMass = new Float64Array(6);
+  private contactCount = 0;
+  private collisionPairs = 0;
+  private collisionCorrections = 0;
+  private collisionLimited = false;
+  private readonly clothThickness = 0.022;
   private rip: { left: number; right: number; top: number; bottom: number; depth: number; detached: boolean; leftPath: number[]; rightPath: number[] } | null = null;
   private tears = 0;
   private tearClock = 0;
@@ -58,6 +77,9 @@ export class Curtain {
   hemV: Float32Array; // hem vertical velocity per column
   private hemPrev: Float32Array;
   geometry: THREE.BufferGeometry;
+  readonly surface = new ClothSurface();
+  private surfaceDirty = true;
+  private edgePositions: Float32Array;
   mesh: THREE.Mesh;
   hf: Heightfield;
 
@@ -87,6 +109,11 @@ export class Curtain {
     this.baseN = n;
     this.capacity = n + 768;
     this.topology = new TearTopology(cols, rows);
+    this.faceLayer = new Uint8Array(this.topology.count);
+    this.particleLayer = new Uint8Array(this.capacity);
+    this.physicsContactTriangles = new Uint16Array(this.topology.count * 6);
+    this.contactTriangles = this.physicsContactTriangles;
+    this.contactSeen = new Int32Array(this.topology.count * 2);
     this.active = new Uint8Array(this.capacity);
     this.active.fill(1, 0, n);
     this.detached = new Uint8Array(this.capacity);
@@ -94,6 +121,7 @@ export class Curtain {
     this.materialNode = new Uint16Array(this.capacity);
     for (let k = 0; k < n; k++) this.materialNode[k] = k;
     this.pos = new Float32Array(this.capacity * 3);
+    this.edgePositions = new Float32Array(this.capacity * 3);
     this.prev = new Float32Array(this.capacity * 3);
     this.inv = new Float32Array(this.capacity).fill(1);
     this.anc = new Float32Array(this.capacity * 3);
@@ -187,8 +215,8 @@ export class Curtain {
     this.mesh.add(fringe);
 
     for (let s = 0; s < 160; s++) this.substep(1 / 60);
-    this.updateHeightfield();
     this.updateMesh();
+    this.updateHeightfield();
   }
 
   /** irregular gathers along the rod */
@@ -311,7 +339,7 @@ export class Curtain {
           const ty = this.grabBase[q * 3 + 1] + this.smoothDY * Math.sqrt(w);
           pos[k] += (tx - pos[k]) * w * 0.9;
           pos[k + 1] += (ty - pos[k + 1]) * w * 0.65;
-          const lift = Math.min(0.17, Math.hypot(this.smoothDX, this.smoothDY) * 0.16);
+          const lift = Math.min(0.11, Math.hypot(this.smoothDX, this.smoothDY) * 0.11);
           pos[k + 2] += (this.grabBase[q * 3 + 2] + lift * w - pos[k + 2]) * w * 0.14;
         }
       }
@@ -328,6 +356,13 @@ export class Curtain {
           }
         }
       }
+    }
+    // Contacts are solved after the final stretch/grip constraint, never overwritten by it.
+    // x/y stay fixed during these passes, so the exact overlap polygons remain valid.
+    if (this.topology.cuts) {
+      this.prepareClothContacts();
+      this.collisionCorrections = 0;
+      for (let pass = 0; pass < 5; pass++) this.solveClothContacts();
     }
     // Retire whole fallen pieces only once every vertex is outside the bottom.
     if (this.pieces) {
@@ -348,6 +383,195 @@ export class Curtain {
         if (keep > this.ret[i]) this.ret[i] = keep;
       }
     }
+  }
+
+  /** Exact projected triangle contacts; includes edge/edge intersections, not just vertices. */
+  private contactFace(triangle: number) {
+    return this.contactRender ? this.surface.physicsFaceForTriangle(triangle) : Math.floor(triangle / 2);
+  }
+
+  private prepareClothContacts(render = false) {
+    this.contactRender = render;
+    this.contactCount = 0;
+    this.collisionPairs = 0;
+    this.collisionLimited = false;
+    if (!this.topology.cuts) return;
+    this.contactTriangles = render ? this.surface.geometry.index!.array as Uint16Array : this.physicsContactTriangles;
+    const p = render ? this.surface.geometry.getAttribute('position').array as Float32Array : this.pos;
+    const triangles = this.contactTriangles, faces = this.topology.faces;
+    const triangleCount = triangles.length / 3;
+    if (this.contactSeen.length < triangleCount) this.contactSeen = new Int32Array(triangleCount);
+    const nx = 40, ny = 48, x0 = -this.o.W * 0.65, y0 = this.o.top - this.o.H - 0.6;
+    const sx = nx / (this.o.W * 1.3), sy = ny / (this.o.H + 1.2);
+    for (const bucket of this.contactGrid) bucket.length = 0;
+    const front: number[] = [];
+    if (!render) {
+      for (let face = 0; face < this.topology.count; face++) {
+        const f = face * 4, t = face * 6;
+        const a = faces[f], b = faces[f + 1], c = faces[f + 2], d = faces[f + 3];
+        triangles.set([a, c, b, c, d, b], t);
+      }
+    }
+    for (let tri = 0; tri < triangleCount; tri++) {
+      const face = this.contactFace(tri), off = tri * 3;
+      if (!render && !this.active[triangles[off]]) continue;
+      const i = triangles[off] * 3, j = triangles[off + 1] * 3, k = triangles[off + 2] * 3;
+      const ix0 = Math.max(0, Math.floor((Math.min(p[i], p[j], p[k]) - x0) * sx));
+      const ix1 = Math.min(nx - 1, Math.floor((Math.max(p[i], p[j], p[k]) - x0) * sx));
+      const iy0 = Math.max(0, Math.floor((Math.min(p[i + 1], p[j + 1], p[k + 1]) - y0) * sy));
+      const iy1 = Math.min(ny - 1, Math.floor((Math.max(p[i + 1], p[j + 1], p[k + 1]) - y0) * sy));
+      for (let y = iy0; y <= iy1; y++) for (let x = ix0; x <= ix1; x++) this.contactGrid[y * nx + x].push(tri);
+      if (this.faceLayer[face]) front.push(tri);
+    }
+    // Back layers first. Within a folded strip its free top lies in front of its lower tail.
+    const rank = (tri: number) => {
+      const face = this.contactFace(tri);
+      return this.faceLayer[face] * 100000 - Math.floor(face / (this.cols - 1)) * 100 + face % (this.cols - 1);
+    };
+    front.sort((a, b) => rank(a) - rank(b));
+    for (const tri of front) {
+      const face = this.contactFace(tri), off = tri * 3;
+      const i = triangles[off] * 3, j = triangles[off + 1] * 3, k = triangles[off + 2] * 3;
+      const ix0 = Math.max(0, Math.floor((Math.min(p[i], p[j], p[k]) - x0) * sx));
+      const ix1 = Math.min(nx - 1, Math.floor((Math.max(p[i], p[j], p[k]) - x0) * sx));
+      const iy0 = Math.max(0, Math.floor((Math.min(p[i + 1], p[j + 1], p[k + 1]) - y0) * sy));
+      const iy1 = Math.min(ny - 1, Math.floor((Math.max(p[i + 1], p[j + 1], p[k + 1]) - y0) * sy));
+      const stamp = ++this.contactStamp;
+      for (let y = iy0; y <= iy1; y++) for (let x = ix0; x <= ix1; x++) for (const other of this.contactGrid[y * nx + x]) {
+        if (this.contactSeen[other] === stamp) continue;
+        this.contactSeen[other] = stamp;
+        const otherFace = this.contactFace(other);
+        if (otherFace === face || rank(other) >= rank(tri)) continue;
+        const otherOff = other * 3;
+        let adjacent = false;
+        for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) if (triangles[off + a] === triangles[otherOff + b]) adjacent = true;
+        // Keep the original shared hinge continuous after subdivision too.
+        if (render) for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) if (faces[face * 4 + a] === faces[otherFace * 4 + b]) adjacent = true;
+        if (adjacent) continue;
+        // A continuous tongue has no globally valid front/back order while it folds.
+        // Its contact with the main sheet / other peeled pieces has a stable layer order.
+        if (this.faceLayer[otherFace] === this.faceLayer[face]) continue;
+        this.collisionPairs++;
+        this.triangleContacts(tri, other);
+      }
+    }
+  }
+
+  private triangleContacts(front: number, back: number) {
+    const ids = this.contactTriangles, fi = front * 3, bi = back * 3;
+    const p = this.contactRender ? this.surface.geometry.getAttribute('position').array as Float32Array : this.pos;
+    const nodeLayers = this.contactRender ? this.renderNodeLayers : this.particleLayer;
+    const ax = p[ids[fi] * 3], ay = p[ids[fi] * 3 + 1];
+    const bx = p[ids[fi + 1] * 3], by = p[ids[fi + 1] * 3 + 1];
+    const cx = p[ids[fi + 2] * 3], cy = p[ids[fi + 2] * 3 + 1];
+    const dx = p[ids[bi] * 3], dy = p[ids[bi] * 3 + 1];
+    const ex = p[ids[bi + 1] * 3], ey = p[ids[bi + 1] * 3 + 1];
+    const fx = p[ids[bi + 2] * 3], fy = p[ids[bi + 2] * 3 + 1];
+    if (Math.max(ax, bx, cx) < Math.min(dx, ex, fx) || Math.min(ax, bx, cx) > Math.max(dx, ex, fx) || Math.max(ay, by, cy) < Math.min(dy, ey, fy) || Math.min(ay, by, cy) > Math.max(dy, ey, fy)) return;
+    const fd = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    const bd = (ey - fy) * (dx - fx) + (fx - ex) * (dy - fy);
+    if (Math.abs(fd) < 1e-8 || Math.abs(bd) < 1e-8) return;
+    const layer = this.faceLayer[this.contactFace(front)];
+    const emit = (x: number, y: number) => {
+      const f0 = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / fd;
+      const f1 = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / fd;
+      const f2 = 1 - f0 - f1;
+      const b0 = ((ey - fy) * (x - fx) + (fx - ex) * (y - fy)) / bd;
+      const b1 = ((fy - dy) * (x - fx) + (dx - fx) * (y - fy)) / bd;
+      const b2 = 1 - b0 - b1;
+      if (Math.min(f0, f1, f2, b0, b1, b2) < -1e-5) return;
+      const weights = [f0, f1, f2, b0, b1, b2];
+      let free = 0;
+      for (let q = 0; q < 3; q++) {
+        const k = ids[fi + q];
+        if (nodeLayers[k] >= layer && k !== ids[bi] && k !== ids[bi + 1] && k !== ids[bi + 2]) free += Math.max(0, weights[q]);
+      }
+      // An attached hinge must remain joined. Fade thickness into it instead of splitting it.
+      if (!this.contactRender && free < 0.02) return;
+      if (this.contactCount >= 72000) { this.collisionLimited = true; return; }
+      const c = this.contactCount++, idOff = c * 6, wOff = c * 7;
+      this.contactLayers[c] = layer;
+      for (let q = 0; q < 3; q++) {
+        this.contactIds[idOff + q] = ids[fi + q];
+        this.contactIds[idOff + q + 3] = ids[bi + q];
+      }
+      this.contactWeights.set(weights, wOff);
+      this.contactWeights[wOff + 6] = this.contactRender ? 0.008 : this.clothThickness * Math.min(1, free * 2);
+    };
+    emit(ax, ay); emit(bx, by); emit(cx, cy);
+    emit(dx, dy); emit(ex, ey); emit(fx, fy);
+    // A thin tongue can cross a large triangle with none of its vertices inside it.
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      const fa = ids[fi + i] * 3, fb = ids[fi + (i + 1) % 3] * 3;
+      const ba = ids[bi + j] * 3, bb = ids[bi + (j + 1) % 3] * 3;
+      const ux = p[fb] - p[fa], uy = p[fb + 1] - p[fa + 1];
+      const vx = p[bb] - p[ba], vy = p[bb + 1] - p[ba + 1];
+      const det = ux * vy - uy * vx;
+      if (Math.abs(det) < 1e-9) continue;
+      const qx = p[ba] - p[fa], qy = p[ba + 1] - p[fa + 1];
+      const t = (qx * vy - qy * vx) / det, u = (qx * uy - qy * ux) / det;
+      if (t > 1e-5 && t < 1 - 1e-5 && u > 1e-5 && u < 1 - 1e-5) emit(p[fa] + t * ux, p[fa + 1] + t * uy);
+    }
+  }
+
+  private solveClothContacts() {
+    const ids = this.contactIds, weights = this.contactWeights;
+    const render = this.contactRender;
+    const p = render ? this.surface.geometry.getAttribute('position').array as Float32Array : this.pos;
+    const nodeLayers = render ? this.renderNodeLayers : this.particleLayer;
+    for (let c = 0; c < this.contactCount; c++) {
+      const off = c * 6, w = c * 7;
+      let front = 0, back = 0;
+      for (let q = 0; q < 3; q++) {
+        front += weights[w + q] * p[ids[off + q] * 3 + 2];
+        back += weights[w + q + 3] * p[ids[off + q + 3] * 3 + 2];
+      }
+      const deficit = back + weights[w + 6] - front;
+      if (deficit <= 0.00001) continue;
+      // Most contacts already satisfy their gap after the first pass. Only real
+      // corrections need masses; reuse double-precision scratch instead of arrays.
+      const mass = this.contactMass;
+      let denominator = 0;
+      for (let q = 0; q < 3; q++) {
+        const k = ids[off + q], rear = ids[off + q + 3];
+        mass[q] = nodeLayers[k] >= this.contactLayers[c] && k !== ids[off + 3] && k !== ids[off + 4] && k !== ids[off + 5] ? (render ? 1 : this.inv[k]) : 0;
+        // The rear can yield at a hinge without forcing its small free corner forward.
+        mass[q + 3] = (render || this.ancKind[rear] === 0) && p[rear * 3 + 2] > this.o.zMin - (render ? 0.012 : 0) + 0.0001 ? (render ? 0.18 : this.inv[rear] * 0.12) : 0;
+        denominator += weights[w + q] ** 2 * mass[q] + weights[w + q + 3] ** 2 * mass[q + 3];
+      }
+      if (denominator < 1e-5) continue;
+      const lambda = deficit / denominator;
+      for (let q = 0; q < 3; q++) {
+        const k = ids[off + q] * 3 + 2, rear = ids[off + q + 3] * 3 + 2;
+        const correction = Math.min(0.14, lambda * Math.max(0, weights[w + q]) * mass[q]);
+        const rearCorrection = Math.min(p[rear] - this.o.zMin + (render ? 0.012 : 0), lambda * Math.max(0, weights[w + q + 3]) * mass[q + 3]);
+        p[k] += correction;
+        p[rear] -= rearCorrection;
+        // Positional contact should not become a violent upward Verlet impulse next frame.
+        if (!render) {
+          this.prev[k] += correction;
+          this.prev[rear] -= rearCorrection;
+        }
+      }
+      this.collisionCorrections++;
+    }
+  }
+
+  collisionStats(render = false) {
+    this.prepareClothContacts(render);
+    const p = render ? this.surface.geometry.getAttribute('position').array as Float32Array : this.pos;
+    let maxPenetration = 0, gapDeficit = 0;
+    for (let c = 0; c < this.contactCount; c++) {
+      const off = c * 6, w = c * 7;
+      let front = 0, back = 0;
+      for (let q = 0; q < 3; q++) {
+        front += this.contactWeights[w + q] * p[this.contactIds[off + q] * 3 + 2];
+        back += this.contactWeights[w + q + 3] * p[this.contactIds[off + q + 3] * 3 + 2];
+      }
+      maxPenetration = Math.max(maxPenetration, back - front);
+      gapDeficit = Math.max(gapDeficit, back + this.contactWeights[w + 6] - front);
+    }
+    return { contacts: this.contactCount, candidatePairs: this.collisionPairs, corrections: this.collisionCorrections, maxPenetration, gapDeficit, thickness: render ? 0.008 : this.clothThickness, limited: this.collisionLimited };
   }
 
   isParticleActive(k: number) {
@@ -418,6 +642,7 @@ export class Curtain {
   }
 
   private rebuildTears() {
+    this.surfaceDirty = true;
     const uv = this.geometry.getAttribute('uv') as THREE.BufferAttribute;
     this.topology.split(source => {
       if (this.n >= this.capacity) throw new Error('Cloth tear capacity exhausted');
@@ -441,8 +666,7 @@ export class Curtain {
     this.edgeWeight.fill(0);
     for (const k of this.tornEdges) {
       this.edgeWeight[k] = 1;
-      // The two newly loosened lips roll toward the viewer, instead of lying perfectly flat.
-      this.prev[k * 3 + 2] -= 0.0015;
+      // No repeated impulse here: newly released fibres inherit the cloth's velocity.
     }
     if (this.rip && this.rip.depth > 0) {
       // The peeled strip is free at the rod; its neighbours retain their original clips.
@@ -450,6 +674,17 @@ export class Curtain {
         const f = x * 4;
         this.ancKind[this.topology.faces[f]] = 0;
         this.ancKind[this.topology.faces[f + 1]] = 0;
+      }
+    }
+    if (this.rip) {
+      for (let y = 0; y < this.rip.depth; y++) for (let x = this.rip.leftPath[y]; x < this.rip.rightPath[y]; x++) this.faceLayer[y * (this.cols - 1) + x] = this.tears;
+    }
+    this.particleLayer.fill(255);
+    for (let face = 0; face < this.topology.count; face++) {
+      const offset = face * 4;
+      for (let c = 0; c < 4; c++) {
+        const k = this.topology.faces[offset + c];
+        this.particleLayer[k] = Math.min(this.particleLayer[k], this.faceLayer[face]);
       }
     }
     const A: number[] = [], B: number[] = [], lengths: number[] = [], strengths: number[] = [];
@@ -534,7 +769,7 @@ export class Curtain {
 
   private updateFringe() {
     let at = 0;
-    const p = this.pos, out = this.fringePositions;
+    const p = this.edgePositions, out = this.fringePositions;
     for (let e = 0; e < this.tornEdges.length; e += 2) {
       const a = this.tornEdges[e], b = this.tornEdges[e + 1];
       if (!this.active[a]) continue;
@@ -668,23 +903,46 @@ export class Curtain {
   updateHeightfield() {
     const hf = this.hf;
     hf.clear();
-    const p = this.pos, faces = this.topology.faces;
-    for (let f = 0; f < faces.length; f += 4) {
-      const a = faces[f], b = faces[f + 1], c = faces[f + 2], d = faces[f + 3];
-      if (!this.active[a]) continue;
-      hf.splatTriangle(p, a, c, b);
-      hf.splatTriangle(p, c, d, b);
+    // Visibility follows the same rounded surface that the camera sees.
+    const p = this.surface.geometry.getAttribute('position').array as Float32Array;
+    const index = this.surface.geometry.index!.array;
+    for (let f = 0; f < index.length; f += 3) {
+      hf.splatTriangle(p, index[f], index[f + 1], index[f + 2]);
     }
   }
 
   updateMesh() {
     (this.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
     this.geometry.computeVertexNormals();
+    if (this.surfaceDirty) {
+      this.surface.rebuild(this.topology.faces, this.active, this.geometry.getAttribute('uv').array, 1);
+      this.mesh.geometry = this.surface.geometry;
+      const index = this.surface.geometry.index!.array;
+      this.renderNodeLayers = new Uint8Array(this.surface.geometry.getAttribute('position').count).fill(255);
+      for (let tri = 0; tri < index.length / 3; tri++) {
+        const layer = this.faceLayer[this.surface.physicsFaceForTriangle(tri)];
+        for (let c = 0; c < 3; c++) this.renderNodeLayers[index[tri * 3 + c]] = Math.min(this.renderNodeLayers[index[tri * 3 + c]], layer);
+      }
+      this.surfaceDirty = false;
+    }
+    this.surface.update(this.pos);
+    if (this.topology.cuts) {
+      // Subdivision can move a safe coarse face through another layer. Project only
+      // the local fine-surface contacts, then use this same surface for light and touch.
+      this.prepareClothContacts(true);
+      for (let pass = 0; pass < 8; pass++) this.solveClothContacts();
+      (this.surface.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+      this.surface.geometry.computeVertexNormals();
+      this.surface.geometry.boundingSphere = null;
+      this.surface.geometry.boundingBox = null;
+    }
+    this.surface.smoothedPhysicsPositions(this.edgePositions);
     this.updateFringe();
   }
 
   dispose() {
     this.geometry.dispose();
+    this.surface.dispose();
     this.fringeGeometry.dispose();
     this.fringeMaterial.dispose();
   }
