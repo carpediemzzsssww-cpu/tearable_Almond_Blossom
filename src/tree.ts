@@ -37,6 +37,10 @@ interface Br {
   rv: number;
   rk: number;
   rc: number;
+  free: boolean;
+  visibleFor: number;
+  coveredFor: number;
+  energy: number;
   modes: Mode[];
   acc: number;
   phase: number;
@@ -77,6 +81,8 @@ interface Bloom {
   x: number;
   y: number;
   z: number;
+  visibleFor: number;
+  energy: number;
 }
 
 interface Petal {
@@ -231,6 +237,7 @@ export class Tree {
       restA: new Float32Array(n - 1), restP: new Float32Array(n - 1),
       pressA: 0, pendant: false, base: new THREE.Vector3(),
       r: 0, rv: 0, rk: 60, rc: 6, modes: [], acc: 0, phase: Math.random() * 10, side: 1,
+      free: false, visibleFor: 0, coveredFor: 0, energy: 0,
       pos: new Float32Array(n * 3), curA: new Float32Array(n - 1), curP: new Float32Array(n - 1), out: new Uint8Array(n),
     };
   }
@@ -328,6 +335,7 @@ export class Tree {
       tilt: 0.12 + R() * 0.38,
       b: 0, delay: R() * 0.35, rate: 1 / (0.55 + R() * 0.9), ph: R() * 10,
       petal0: -1, tint, slot: 0, x: 0, y: 0, z: 0,
+      visibleFor: 0, energy: 0,
     };
     if (type === BT.Leaf) {
       bl.an = R() < 0.5 ? 1 : -1;
@@ -450,6 +458,10 @@ export class Tree {
     const t = ctx.time;
     const cur = ctx.curtain;
     const zCap = cur.o.zMin - 0.04;
+    // The fine twigs have a higher frequency than the limbs. Small substeps keep
+    // both their release and sway stable during a slow mobile frame.
+    const steps = Math.max(1, Math.ceil(dt * 120));
+    const h = dt / steps;
 
     for (let bi = 0; bi < this.branches.length; bi++) {
       const br = this.branches[bi];
@@ -462,10 +474,19 @@ export class Tree {
         bz = parent.pos[ai * 3 + 2];
         baseA = parent.curA[Math.min(ai, parent.n - 2)];
         baseP = parent.curP[Math.min(ai, parent.n - 2)];
-        // springs free once the linen no longer covers where it grows from
-        const free = parent.out[ai] === 1 ? 1 : 0;
-        br.rv += (br.rk * (free - br.r) - br.rc * br.rv) * dt;
-        br.r = clamp(br.r + br.rv * dt, -0.3, 1.5);
+        // Debounce the cloth edge in camera space: a single exposed frame must
+        // not repeatedly release/compress a twig as the frayed edge trembles.
+        const exposed = parent.out[ai] === 1 && ctx.exposed(bx, by, bz);
+        br.visibleFor = exposed ? br.visibleFor + dt : 0;
+        br.coveredFor = exposed ? 0 : br.coveredFor + dt;
+        if (br.visibleFor > 0.045) br.free = true;
+        else if (br.coveredFor > 0.22) br.free = false;
+        const free = br.free ? 1 : 0;
+        for (let s = 0; s < steps; s++) {
+          br.rv += (br.rk * (free - br.r) - br.rc * br.rv) * h;
+          br.r = clamp(br.r + br.rv * h, -0.2, 1.4);
+          if ((br.r === -0.2 && br.rv < 0) || (br.r === 1.4 && br.rv > 0)) br.rv = 0;
+        }
       } else {
         bx = br.base.x;
         by = br.base.y;
@@ -474,23 +495,30 @@ export class Tree {
       const rr = clamp(br.r, 0, 1);
 
       // sway: wind (only where uncovered), the passing hem, a gust on fast pulls, parent motion
-      const hv = cur.hemVel(bx);
+      const hv = clamp(cur.hemVel(bx), -this.L * 2, this.L * 2);
       const near = Math.exp(-(((by - cur.hemY(bx)) / (0.25 * this.L)) ** 2));
+      br.energy = Math.max(br.energy * Math.exp(-dt / 0.55), this.localEnergy(bx, by, ctx));
       br.acc = 0;
       for (let mi = 0; mi < br.modes.length; mi++) {
         const m = br.modes[mi];
         const amp = br.depth === 0 ? 0.004 : br.depth === 1 ? 0.022 : 0.05;
-        const wind = (Math.sin(t * 0.9 + br.phase + mi) * 0.6 + Math.sin(t * 2.13 + br.phase * 1.7) * 0.3 + Math.sin(t * 0.37 + br.phase * 0.5) * 0.5) * amp * (1 + ctx.wave * 2) * (0.2 + 0.8 * rr);
-        let Fa = m.k * (wind - m.a) - m.c * m.av;
-        let Fp = m.k * (wind * 0.6 - m.p) - m.c * m.pv;
-        if (br.depth > 0) {
-          Fa += hv * near * br.side * 9 + -parent!.acc * 0.35;
-          Fp += hv * near * 6 + br.rv * 1.5;
+        const wind = (Math.sin(t * 0.9 + br.phase + mi) * 0.6 + Math.sin(t * 2.13 + br.phase * 1.7) * 0.3 + Math.sin(t * 0.37 + br.phase * 0.5) * 0.5) * amp * (1 + br.energy * 1.4) * (0.2 + 0.8 * rr);
+        let Fa = 0;
+        for (let s = 0; s < steps; s++) {
+          Fa = m.k * (wind - m.a) - m.c * m.av;
+          let Fp = m.k * (wind * 0.6 - m.p) - m.c * m.pv;
+          if (parent) {
+            const contact = hv * near * (0.15 + 0.85 * rr);
+            Fa += contact * br.side * 4.5 - clamp(parent.acc, -12, 12) * 0.18;
+            Fp += contact * 3 + br.rv * 1.1;
+          }
+          m.av += Fa * h;
+          m.a = clamp(m.a + m.av * h, -0.65, 0.65);
+          m.pv += Fp * h;
+          m.p = clamp(m.p + m.pv * h, -0.55, 0.55);
+          if (Math.abs(m.a) === 0.65 && m.a * m.av > 0) m.av = 0;
+          if (Math.abs(m.p) === 0.55 && m.p * m.pv > 0) m.pv = 0;
         }
-        m.av += Fa * dt;
-        m.a = clamp(m.a + m.av * dt, -0.8, 0.8);
-        m.pv += Fp * dt;
-        m.p = clamp(m.p + m.pv * dt, -0.7, 0.7);
         br.acc += Fa;
       }
 
@@ -540,13 +568,22 @@ export class Tree {
         pos[(j + 1) * 3] = x;
         pos[(j + 1) * 3 + 1] = y;
         pos[(j + 1) * 3 + 2] = z;
-        br.out[j + 1] = !covered || z > hz ? 1 : 0;
+        br.out[j + 1] = ctx.exposed(x, y, z) ? 1 : 0;
       }
     }
 
     this.writeBranches();
     this.writeBlooms(dt, ctx);
     this.updateFallen(dt, ctx);
+  }
+
+  /** A pull only excites flowers beside that moving edge or fracture. */
+  private localEnergy(x: number, y: number, ctx: TreeCtx) {
+    const cur = ctx.curtain;
+    const distance = (y - cur.hemY(x)) / (this.L * 0.2);
+    const near = Math.exp(-distance * distance);
+    const movingEdge = Math.abs(cur.hemVel(x)) / (this.L * 1.4) * near;
+    return clamp(Math.max(movingEdge, cur.tearEnergyAt(x, y)), 0, 1);
   }
 
   private frame(br: Br, node: number) {
@@ -597,11 +634,14 @@ export class Tree {
       bl.y = v1.y;
       bl.z = v1.z;
       const exposed = ctx.exposed(v1.x, v1.y, v1.z);
-      if (exposed) {
-        // a short, random hesitation; a fast pull makes everything open at once
-        if (bl.delay > 0) bl.delay -= dt * (1 + ctx.wave * 4);
-        else bl.b = Math.min(1, bl.b + dt * bl.rate * (1 + ctx.wave * 1.8));
-      } else if (bl.b < 0.35) bl.b = Math.max(0, bl.b - dt * 0.5);
+      bl.visibleFor = exposed ? Math.min(0.12, bl.visibleFor + dt) : Math.max(0, bl.visibleFor - dt);
+      bl.energy = Math.max(bl.energy * Math.exp(-dt / 0.45), exposed ? this.localEnergy(v1.x, v1.y, ctx) : 0);
+      if (exposed && bl.visibleFor > 0.035) {
+        // Retain the opening after a release; a returning cloth edge may hide
+        // the blossom again, but cannot wind its petals back into a bud.
+        if (bl.delay > 0) bl.delay -= dt * (1 + bl.energy * 3);
+        else bl.b = Math.min(1, bl.b + dt * bl.rate * (1 + bl.energy * 1.5));
+      }
       const o = bl.b <= 0 ? 0 : easeOutBack(bl.b);
 
       if (bl.type === BT.Leaf) {
@@ -609,7 +649,7 @@ export class Tree {
         v2.copy(B).addScaledVector(d, -B.dot(d)).normalize();
         const X = this.v3.crossVectors(d, v2);
         m1.makeBasis(X, d, v2);
-        m2.makeRotationY(Math.sin(t * 2.4 + bl.ph) * 0.06 * (1 + ctx.wave * 3));
+        m2.makeRotationY(Math.sin(t * 2.4 + bl.ph) * 0.06 * (1 + bl.energy * 2));
         m1.multiply(m2);
         const s = bl.size * (0.3 + 0.7 * o);
         m1.scale(S.set(s, s, s));
@@ -623,7 +663,7 @@ export class Tree {
       d.z += bl.bias;
       d.normalize();
       q.setFromUnitVectors(Zw, d);
-      const flutter = ctx.wave * 0.25 * Math.sin(t * 7 + bl.ph);
+      const flutter = bl.energy * 0.18 * Math.sin(t * 7 + bl.ph);
       // petals unfurl with a quarter twist, like a real blossom opening
       q2.setFromAxisAngle(Zw, bl.spin + flutter * 0.5 - (1 - Math.min(o, 1)) * 0.9);
       q.multiply(q2);
@@ -643,13 +683,18 @@ export class Tree {
       const breath = Math.sin(t * 1.3 + bl.ph) * 0.02;
       for (let k = 0; k < 5; k++) {
         const p = this.petals[bl.petal0 + k];
-        const tilt = lerp(1.4, bl.tilt, o) + p.tilt * o + breath + flutter * (0.6 + 0.4 * Math.sin(k * 2.1));
+        // The five petals loosen one after another. The remapping reaches 1
+        // exactly, leaving the original fully-open silhouette unchanged.
+        const delay = (0.5 + 0.5 * Math.sin(bl.ph + k * 2.399)) * 0.13;
+        const progress = clamp((bl.b - delay) / (1 - delay), 0, 1);
+        const po = progress === 0 ? 0 : easeOutBack(progress);
+        const tilt = lerp(1.4, bl.tilt, po) + p.tilt * po + breath + flutter * (0.6 + 0.4 * Math.sin(k * 2.1));
         m1.makeRotationZ(p.phi);
         m2.makeTranslation(0, 0.06, 0);
         m1.multiply(m2);
         m2.makeRotationX(tilt);
         m1.multiply(m2);
-        m2.makeRotationY(p.twist * o);
+        m2.makeRotationY(p.twist * po);
         m1.multiply(m2);
         m2.makeScale(p.w, p.l, 1);
         m1.multiply(m2);
@@ -666,10 +711,13 @@ export class Tree {
     this.fallCooldown -= dt;
     this.idleFall -= dt;
     let open: Bloom[] | null = null;
-    const opened = () => (open ??= this.blooms.filter((b) => b.type === BT.Flower && b.b > 0.9));
-    if (ctx.wave > 0.55 && this.fallCooldown <= 0 && opened().length > 4) {
-      this.spawn(opened(), 2 + ((Math.random() * 3) | 0));
-      this.fallCooldown = 1.4;
+    const opened = () => (open ??= this.blooms.filter((b) => b.type === BT.Flower && b.b > 0.9 && ctx.exposed(b.x, b.y, b.z)));
+    if (this.fallCooldown <= 0) {
+      const disturbed = opened().filter((b) => b.energy > 0.5);
+      if (disturbed.length > 0) {
+        this.spawn(disturbed, Math.min(3, disturbed.length));
+        this.fallCooldown = 1.4;
+      }
     }
     if (this.idleFall <= 0) {
       if (opened().length > 12) this.spawn(opened(), 1);
@@ -684,7 +732,15 @@ export class Tree {
       f.life += dt;
       if (f.landed >= 0) {
         const k = f.landed;
-        f.p.fromArray(cur.pos, k * 3).add(f.off);
+        if (cur.isParticleActive(k)) {
+          f.p.fromArray(cur.pos, k * 3).add(f.off);
+        } else {
+          // A torn-away scrap no longer supports a petal. Keep its last world
+          // position and let it drift down instead of snapping to the old grid.
+          f.landed = -1;
+          f.life = Math.min(f.life, 8);
+          f.v.set(Math.sin(f.ph) * 0.05, -0.08, 0.03);
+        }
       } else {
         f.v.y -= 0.5 * dt;
         f.v.multiplyScalar(Math.exp(-2.2 * dt));
@@ -698,15 +754,17 @@ export class Tree {
           if (f.p.z < hz + 0.01) {
             // touch down: rest on the cloth and ride along with it
             const k = cur.nearest(f.p.x, f.p.y, f.p.z);
-            f.landed = k;
-            this.v3.fromArray(cur.pos, k * 3);
-            const nz = this.v1.fromBufferAttribute(nrm, k).normalize();
-            if (nz.z < 0) nz.negate();
-            f.p.set(f.p.x, f.p.y, this.v3.z).addScaledVector(nz, 0.006);
-            f.off.copy(f.p).sub(this.v3);
-            this.q.setFromUnitVectors(Zw, nz);
-            this.q2.setFromAxisAngle(Zw, Math.random() * Math.PI * 2);
-            f.q.copy(this.q).multiply(this.q2);
+            if (k >= 0 && cur.isParticleActive(k)) {
+              f.landed = k;
+              this.v3.fromArray(cur.pos, k * 3);
+              const nz = this.v1.fromBufferAttribute(nrm, k).normalize();
+              if (nz.z < 0) nz.negate();
+              f.p.set(f.p.x, f.p.y, this.v3.z).addScaledVector(nz, 0.006);
+              f.off.copy(f.p).sub(this.v3);
+              this.q.setFromUnitVectors(Zw, nz);
+              this.q2.setFromAxisAngle(Zw, Math.random() * Math.PI * 2);
+              f.q.copy(this.q).multiply(this.q2);
+            }
           }
         }
         if (f.p.y < cur.o.top - cur.o.H || f.life > 14) f.on = false;
@@ -743,9 +801,18 @@ export class Tree {
   }
 
   dispose() {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
     this.group.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
+      if (m.geometry) geometries.add(m.geometry);
+      if (m.material) {
+        for (const material of Array.isArray(m.material) ? m.material : [m.material]) materials.add(material);
+      }
+      if ((m as THREE.InstancedMesh).isInstancedMesh) (m as THREE.InstancedMesh).dispose();
     });
+    for (const geometry of geometries) geometry.dispose();
+    // The petal texture is shared by successive trees and remains owned by main.
+    for (const material of materials) material.dispose();
   }
 }

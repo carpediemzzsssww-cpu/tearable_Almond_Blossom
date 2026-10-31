@@ -185,6 +185,7 @@ addEventListener('resize', () => {
   clearTimeout(resizeT);
   resizeT = window.setTimeout(() => {
     if (Math.abs(camera.aspect / builtAspect - 1) > 0.08) {
+      releasePointer();
       builtAspect = camera.aspect;
       build();
     }
@@ -206,11 +207,28 @@ function worldAt(x: number, y: number, out: THREE.Vector3) {
 }
 function rubber(dx: number, dy: number) {
   const v = viewAt(zCloth);
-  const mx = v.W * 0.16, my = v.H * 0.78, up = v.H * 0.04;
+  // Enough lateral travel to peel a flap sideways; only the far end of a
+  // gesture meets the soft limit, so short movements stay close to 1:1.
+  const mx = v.W * 0.46, my = v.H * 1.05, up = v.H * 0.25;
   return [mx * Math.tanh(dx / mx), dy < 0 ? -my * Math.tanh(-dy / my) : up * Math.tanh(dy / up)];
 }
 function grabAt(sx: number, sy: number) {
-  const k = curtain.pick(camera, sx, sy, innerWidth, innerHeight, coarse ? 90 : 70);
+  ndc.set((sx / innerWidth) * 2 - 1, -(sy / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  curtain.geometry.computeBoundingSphere();
+  // A hole is empty space. Projecting every particle alone would let the hand
+  // grab invisible cloth through the opening, or a rear fold through the front.
+  const surface = ray.intersectObject(curtain.mesh, false)[0];
+  if (!surface) return false;
+  let k = -1, distance = Infinity;
+  if (surface.face) {
+    for (const candidate of [surface.face.a, surface.face.b, surface.face.c]) {
+      if (!curtain.isParticleActive(candidate) || curtain.inv[candidate] === 0) continue;
+      hit.fromArray(curtain.pos, candidate * 3).project(camera);
+      const d = ((hit.x * 0.5 + 0.5) * innerWidth - sx) ** 2 + ((0.5 - hit.y * 0.5) * innerHeight - sy) ** 2;
+      if (d < distance) { distance = d; k = candidate; }
+    }
+  }
   if (k < 0) return false;
   plane.constant = -curtain.pos[k * 3 + 2];
   curtain.startGrab(k);
@@ -220,7 +238,7 @@ function grabAt(sx: number, sy: number) {
 }
 
 canvas.addEventListener('pointerdown', (e) => {
-  if (drag) return;
+  if (drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
   if (!grabAt(e.clientX, e.clientY)) return;
   const start = new THREE.Vector3();
   if (!worldAt(e.clientX, e.clientY, start)) {
@@ -229,22 +247,35 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   canvas.setPointerCapture(e.pointerId);
   drag = { id: e.pointerId, start };
+  lastDY = 0;
+  pullVY = 0;
   canvas.style.cursor = 'grabbing';
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!drag || e.pointerId !== drag.id) return;
-  if (!worldAt(e.clientX, e.clientY, hit)) return;
+  // Browsers may batch stylus/touch samples; use their newest position and
+  // let the fixed-step cloth solver absorb the motion continuously.
+  const samples = e.getCoalescedEvents?.();
+  const latest = samples?.length ? samples[samples.length - 1] : e;
+  if (!worldAt(latest.clientX, latest.clientY, hit)) return;
   const [x, y] = rubber(hit.x - drag.start.x, hit.y - drag.start.y);
   curtain.setGrab(x, y);
 });
-const end = (e: PointerEvent) => {
-  if (!drag || e.pointerId !== drag.id) return;
+function releasePointer() {
+  const id = drag?.id;
   drag = null;
   curtain.release();
+  if (id !== undefined && canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
   canvas.style.cursor = 'grab';
+}
+const end = (e: PointerEvent) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  releasePointer();
 };
 canvas.addEventListener('pointerup', end);
 canvas.addEventListener('pointercancel', end);
+canvas.addEventListener('lostpointercapture', end);
+addEventListener('blur', releasePointer);
 canvas.style.cursor = 'grab';
 
 // ── simulation ──
@@ -268,8 +299,9 @@ const ctx = {
 
 function simulate(dt: number) {
   time += dt;
-  const gdy = curtain.grabbing ? curtain.grabDY : 0;
-  pullVY += ((gdy - lastDY) / dt - pullVY) * (1 - Math.exp(-dt / 0.06));
+  const gdy = curtain.grabDY;
+  const velocity = curtain.grabbing ? (gdy - lastDY) / dt : 0;
+  pullVY += (velocity - pullVY) * (1 - Math.exp(-dt / 0.06));
   lastDY = gdy;
 
   if (!touched) {
@@ -333,6 +365,8 @@ function frame(now: number) {
 requestAnimationFrame(frame);
 document.addEventListener('visibilitychange', () => {
   paused = document.hidden;
+  if (paused) releasePointer();
+  last = performance.now();
 });
 requestAnimationFrame(() => document.getElementById('fade')?.classList.add('gone'));
 
@@ -347,7 +381,13 @@ const api = {
   camera,
   renderer,
   linenU,
-  state: () => ({ open: curtain.openness(), maxOpen, wave, dpr, frameAvg, ...tree.stats() }),
+  state: () => ({ open: curtain.openness(), maxOpen, wave, dpr, frameAvg, ...tree.stats(), ...curtain.stats() }),
+  reset() {
+    releasePointer();
+    build();
+    time = wave = lastDY = pullVY = idleT = 0;
+    touched = false;
+  },
   step(ms: number, fps = 60) {
     const n = Math.round((ms / 1000) * fps);
     for (let i = 0; i < n; i++) simulate(1 / fps);
@@ -360,6 +400,8 @@ const api = {
   },
   /** grab at a screen point given as fractions of the viewport */
   grab(fx = 0.5, fy = 0.6) {
+    lastDY = 0;
+    pullVY = 0;
     return grabAt(fx * innerWidth, fy * innerHeight);
   },
   /** pull by fractions of the view height (negative = down) */
@@ -369,7 +411,7 @@ const api = {
     curtain.setGrab(x, y);
   },
   release() {
-    curtain.release();
+    releasePointer();
   },
 };
 (window as unknown as { __almond: typeof api }).__almond = api;
