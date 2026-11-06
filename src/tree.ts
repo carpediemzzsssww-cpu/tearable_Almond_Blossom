@@ -370,9 +370,9 @@ export class Tree {
       color: 0xffffff, map: barkTex.map, bumpMap: barkTex.bump,
       bumpScale: 0.0035, roughness: 0.96,
     });
-    const cyl = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0);
+    const cyl = new THREE.CylinderGeometry(1, 1, 1, import.meta.env.MODE === 'minitool' ? 5 : 8, 1, true).translate(0, 0.5, 0);
     this.segMesh = new THREE.InstancedMesh(cyl, bark, nSeg);
-    this.jointMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), bark, nJoint);
+    this.jointMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, import.meta.env.MODE === 'minitool' ? 4 : 8, import.meta.env.MODE === 'minitool' ? 2 : 6), bark, nJoint);
     const c = new THREE.Color();
     const c0 = [new THREE.Color('#48584c'), new THREE.Color('#5b6250'), new THREE.Color('#6e6a50')];
     const c1 = [new THREE.Color('#7f8e73'), new THREE.Color('#99966e'), new THREE.Color('#aca172')];

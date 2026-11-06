@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+const mini = import.meta.env.MODE === 'minitool';
+
 type V = [number, number, number];
 
 /** tiny triangle soup builder with vertex colours (non-indexed, flat normals) */
@@ -63,7 +65,7 @@ const C = (hex: string) => new THREE.Color(hex);
  * Broad obovate almond petal with cupping, a little curl and edge ruffle.
  */
 export function petalGeometry(o: { w: number; cup: number; curl: number; ruffle: number; skew: number }) {
-  const NU = 6, NV = 10;
+  const NU = mini ? 3 : 6, NV = mini ? 4 : 10;
   const pos: number[] = [], uv: number[] = [], idx: number[] = [];
   for (let iv = 0; iv <= NV; iv++) {
     const t = iv / NV;
@@ -94,7 +96,7 @@ export function petalGeometry(o: { w: number; cup: number; curl: number; ruffle:
 /** receptacle, stamens and sepals, in petal-length units, axis +Z */
 export function centerGeometry(seed: () => number) {
   const s = new Soup();
-  const dome = new THREE.SphereGeometry(0.11, 10, 6);
+  const dome = new THREE.SphereGeometry(0.11, mini ? 6 : 10, mini ? 3 : 6);
   dome.scale(1, 1, 0.5);
   const dark = C('#8a3440'), gold = C('#b9963e');
   s.addGeometry(dome, (p) => (p.z > 0.03 ? gold : dark));
@@ -107,8 +109,12 @@ export function centerGeometry(seed: () => number) {
     const r0 = 0.05 + seed() * 0.03;
     const p0: V = [Math.cos(phi) * r0, Math.sin(phi) * r0, 0.02];
     const p1: V = [p0[0] + Math.cos(phi) * Math.sin(el) * L, p0[1] + Math.sin(phi) * Math.sin(el) * L, 0.02 + Math.cos(el) * L];
-    s.prism(p0, p1, 0.007, 0.005, fil0, fil1);
-    s.blob(p1, 0.022, 0.022, 0.016, seed() < 0.3 ? pollen : anther);
+    const colour = seed() < 0.3 ? pollen : anther;
+    // Consume the same random samples so tree placement stays identical.
+    if (!mini || k % 12 === 0) {
+      s.prism(p0, p1, 0.007, 0.005, fil0, fil1);
+      s.blob(p1, 0.022, 0.022, 0.016, colour);
+    }
   }
   // pistil
   s.prism([0, 0, 0.03], [0.01, 0, 0.36], 0.012, 0.008, C('#a9b45a'), C('#cfd27a'));
@@ -127,7 +133,7 @@ export function centerGeometry(seed: () => number) {
 /** closed almond bud: rose base, five faint lobes, pale tip; axis +Z */
 export function budGeometry() {
   const s = new Soup();
-  const g = new THREE.SphereGeometry(1, 14, 10);
+  const g = new THREE.SphereGeometry(1, mini ? 6 : 14, mini ? 4 : 10);
   const p = g.getAttribute('position') as THREE.BufferAttribute;
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
@@ -153,7 +159,7 @@ export function budGeometry() {
 
 /** young almond leaf, lanceolate, folded along the midrib; length 1 along +Y */
 export function leafGeometry() {
-  const NU = 4, NV = 9;
+  const NU = mini ? 2 : 4, NV = mini ? 4 : 9;
   const pos: number[] = [], col: number[] = [], idx: number[] = [];
   const base = C('#5f7a32'), tipc = C('#a9be5c'), rib = C('#c9d58a');
   const tmp = new THREE.Color();

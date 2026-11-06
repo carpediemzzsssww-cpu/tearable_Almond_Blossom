@@ -7,7 +7,10 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "build:minitool": "tsc --noEmit && vite build --config vite.minitool.config.ts && node scripts/minitool/prepare.mjs && node scripts/minitool/package-minitool.mjs --force",
+    "preview:minitool": "node scripts/minitool/serve-csp.mjs",
+    "verify:minitool": "node scripts/minitool/verify.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"

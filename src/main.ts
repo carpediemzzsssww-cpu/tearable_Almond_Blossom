@@ -4,19 +4,22 @@ import { Tree } from './tree';
 import { wallTextures, linenTextures, petalTexture } from './textures';
 import { clamp } from './util';
 
+export function start(onUnavailable: () => void = () => {}) {
+const minitool = import.meta.env.MODE === 'minitool';
 const params = new URLSearchParams(location.search);
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const coarse = matchMedia('(pointer: coarse)').matches;
-const lowTier = coarse || Math.min(innerWidth, innerHeight) < 640;
+const lowTier = minitool || coarse || Math.min(innerWidth, innerHeight) < 640;
 
 let renderer: THREE.WebGLRenderer;
 try {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 } catch {
   document.body.classList.add('no-webgl');
-  throw new Error('WebGL unavailable');
+  onUnavailable();
+  return;
 }
-const maxDpr = Math.min(window.devicePixelRatio || 1, 2);
+const maxDpr = Math.min(window.devicePixelRatio || 1, minitool ? 1.5 : 2);
 let dpr = maxDpr;
 renderer.setPixelRatio(dpr);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -169,6 +172,10 @@ function build() {
 }
 
 function size() {
+  if (minitool) {
+    dpr = Math.min(dpr, Math.sqrt(2_000_000 / (innerWidth * innerHeight)));
+    renderer.setPixelRatio(dpr);
+  }
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -346,9 +353,54 @@ let last = performance.now();
 let frameAvg = 16;
 let frames = 0;
 let paused = false;
+let contextLost = false;
+let unavailable = false;
+let losses = 0;
+let restoreTimeout = 0;
+let cpuAvg = 0;
+let slowFrames = 0;
+function fallback() {
+  if (unavailable) return;
+  unavailable = true;
+  releasePointer();
+  clearTimeout(restoreTimeout);
+  curtain.dispose();
+  tree.dispose();
+  wall.geometry.dispose();
+  wall.material.dispose();
+  for (const texture of [wt.map, wt.bump, lt.map, lt.normal, petalTex]) texture.dispose();
+  linen.dispose(); silRT.dispose(); silMat.dispose();
+  renderer.dispose();
+  onUnavailable();
+}
+if (minitool) {
+  renderer.debug.onShaderError = fallback;
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    contextLost = true;
+    releasePointer();
+    if (++losses > 1) fallback();
+    else {
+      document.body.classList.add('context-lost');
+      restoreTimeout = window.setTimeout(fallback, 3000);
+    }
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    if (unavailable) return;
+    clearTimeout(restoreTimeout);
+    dpr = 1;
+    renderer.shadowMap.enabled = false;
+    size();
+    contextLost = false;
+    document.body.classList.remove('context-lost');
+    last = performance.now();
+  });
+}
+
 function frame(now: number) {
+  if (unavailable) return;
   requestAnimationFrame(frame);
-  if (paused) {
+  if (paused || contextLost) {
     last = now;
     return;
   }
@@ -361,8 +413,19 @@ function frame(now: number) {
     size();
     frames = 0;
   }
+  const cpuStart = performance.now();
   simulate(Math.max(Math.min(raw / 1000, 1 / 30), 1 / 240));
   draw();
+  if (minitool) {
+    cpuAvg += (performance.now() - cpuStart - cpuAvg) * 0.04;
+    if (cpuAvg > 28) slowFrames++; else slowFrames = 0;
+    if (slowFrames > 120) {
+      slowFrames = 0;
+      if (dpr > 1) { dpr = 1; renderer.setPixelRatio(dpr); size(); }
+      else if (renderer.shadowMap.enabled) renderer.shadowMap.enabled = false;
+      else fallback();
+    }
+  }
 }
 requestAnimationFrame(frame);
 document.addEventListener('visibilitychange', () => {
@@ -434,3 +497,7 @@ if (params.has('state')) {
     tick();
   }
 }
+
+}
+
+if (import.meta.env.MODE !== 'minitool') start();

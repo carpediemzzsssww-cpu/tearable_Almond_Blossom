@@ -40,7 +40,7 @@ export function wallTextures(aniso: number, size = 1024) {
     wrap(x, y, r, (ox, oy) => {
       const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
       gr.addColorStop(0, colour);
-      gr.addColorStop(1, colour + '00');
+      gr.addColorStop(1, `rgba(${parseInt(colour.slice(1, 3), 16)},${parseInt(colour.slice(3, 5), 16)},${parseInt(colour.slice(5, 7), 16)},0)`);
       g.globalAlpha = 0.22;
       g.fillStyle = gr;
       g.fillRect(x + ox - r, y + oy - r, r * 2, r * 2);
